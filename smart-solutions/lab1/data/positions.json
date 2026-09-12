@@ -1,0 +1,29 @@
+{
+  "comment": "Koordinaadid tuleb mõõta MG400-l laboris.",
+  "positions": {
+    "above_source": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "r": null
+    },
+    "source": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "r": null
+    },
+    "above_finished": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "r": null
+    },
+    "finished": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "r": null
+    }
+  }
+}
