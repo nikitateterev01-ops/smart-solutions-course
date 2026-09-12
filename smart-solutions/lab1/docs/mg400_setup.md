@@ -46,6 +46,16 @@
 - Meeskonnaliige.
 - Konkreetne roll selles MG400 etapis: TODO
 
+## Seos Andmehõive Labor 1-ga
+
+- MG400 ja pumbakasti esmane reaalne ühendus ning `mg400-base` kasutamine toimus sama meeskonna ühise laboritöö käigus.
+- Andmehõive poolel kasutatakse sama `mg400-base` HTTP API-t pumba juhtimiseks Python loggerist.
+- Smart Solutions poolel kasutatakse sama MG400 ühendust roboti liikumise, salvestatud asendite, pick-and-place'i ja hiljem tähtede joonistamise jaoks.
+- Ühised ühendusfaktid võivad olla mõlemas repos dokumenteeritud.
+- Ainepõhine kood, mõõtmised ja tulemused jäävad oma repo dokumentatsiooni.
+- Smart Solutions repo ei kopeeri Andmehõive `logger.py` faili.
+- Andmehõive repo: [https://github.com/Dennel04/data-acquisition-course](https://github.com/Dennel04/data-acquisition-course)
+
 ## Raimo arvutil juba tehtud
 
 - [x] `mg400-base` kloonitud.

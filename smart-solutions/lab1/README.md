@@ -127,6 +127,9 @@ Kirjuta üles:
 
 #### Tegelik MG400 katse Raimo arvutil
 
+- See MG400 katse toimus sama meeskonna ühise laboritöö käigus ja oli seotud ka Andmehõive Lab 1 tööga.
+- Smart Solutions dokumenteerib sellest ainult robotiliikumise, võrgu, positsioonide, pick-and-place'i ja tähejoonistamise jaoks olulise osa.
+
 - MG400 ühendati Raimo arvutiga LAN1 kaudu.
 - Jaama IPv4 oli `192.168.1.50`.
 - `ping 192.168.1.6` õnnestus.
