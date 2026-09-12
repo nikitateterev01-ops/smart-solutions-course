@@ -179,6 +179,23 @@ Kirjuta üles:
 
 Tellimus läheb välja 22.09.26 ja jõuab kohale enne kaitsmist. Valmis nimekirja ei ole: meeskond käib labori alguses läbi ja paneb tellimuse ise kokku faili `docs/bom.md`, iga rea juures üks lause, milline osa seda küsib. Mõtle näiteks, kas igal sülearvutil on Etherneti port või adapter, kas USB-C kaableid jätkub ja millega robot joonistab, kuni hoidikut ei ole.
 
+#### Esimese laborikülastuse kontrollnimekiri
+
+- [ ] Kontrolli BOM-i järgi, mis on laboris olemas.
+- [ ] Kontrolli, kas sülearvutil on Ethernet või USB-C → Ethernet adapter.
+- [ ] Leia MG400 LAN1 port.
+- [ ] Kontrolli, et hädastopp oleks käeulatuses.
+- [ ] Kontrolli MG400 API-režiimi.
+- [ ] Seadista arvuti Ethernet aadress 192.168.1.50 / 255.255.255.0.
+- [ ] Pingi 192.168.1.6.
+- [ ] Kontrolli porte 29999, 30003, 30004.
+- [ ] Käivita `mg400 status`.
+- [ ] Käivita `mg400 serve`.
+- [ ] Tee esimene liigutus ainult 20% kiirusel.
+- [ ] Kontrolli pumbakasti DO liinid juhendi ja multimeetriga.
+- [ ] Ära ühenda 24 V pumbakasti juhtmeid enne kontrolli.
+- [ ] Pane kõik reaalsed tulemused README-sse ja vajalikesse docs failidesse.
+
 ### Hindamiskriteeriumid
 
 | Kategooria | Punktid |
@@ -213,6 +230,18 @@ Repos on kaustas `smart-solutions/lab1/`:
 * Juhtus (numbrid):
 * Otsustasime, ja miks:
 * Lahti järgmiseks korraks:
+
+**12.09.26 — kes olid kohal**
+* Osalejad: TODO
+* Tegime:
+  * Repo struktuur loodi.
+  * Õpetaja ülesanne kopeeriti README-sse.
+  * Kohustuslike failide mallid loodi.
+  * BOM-i kontrollnimekiri valmistati ette.
+  * Esimese laborikülastuse sammud pandi kirja.
+* Juhtus (numbrid): Reaalseid mõõtmisi ei tehtud.
+* Otsustasime, ja miks: Riistvaraandmed jäävad TODO-ks kuni laborikontrollini, et dokumenti ei lisataks oletusi.
+* Lahti järgmiseks korraks: Kontrollida laboris BOM-i ja esimese laborikülastuse kontrollnimekirja punkte.
 
 ### Väljundid ja tulemused
 
