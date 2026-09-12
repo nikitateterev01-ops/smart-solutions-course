@@ -100,6 +100,13 @@ static const char INDEX_HTML[] PROGMEM = R"=====(<!DOCTYPE html>
   .peerrow:hover .pn{text-decoration:underline}
   .peerrow .pn{color:var(--hot);font-weight:700}
   .peerrow .pip{color:var(--dim);font-size:10px}
+  .settings-field{display:flex;flex-direction:column;gap:4px}
+  .settings-field span{font-size:10px;color:var(--dim);letter-spacing:.08em}
+  .settings-field input{
+    width:100%;font:inherit;font-size:11px;background:var(--pad);color:var(--ink);
+    border:1px solid var(--line);padding:7px 8px
+  }
+  .settings-field input:focus{outline:none;border-color:var(--hot)}
 </style>
 </head>
 <body>
@@ -185,6 +192,31 @@ static const char INDEX_HTML[] PROGMEM = R"=====(<!DOCTYPE html>
 
     <div class="div"></div>
 
+    <div class="group">
+      <span class="label">Settings &amp; tests</span>
+      <label class="settings-field">
+        <span>Wi-Fi name (SSID)</span>
+        <input id="settingsSsid" type="text" autocomplete="off">
+      </label>
+      <label class="settings-field">
+        <span>Wi-Fi password</span>
+        <input id="settingsPass" type="password" autocomplete="new-password">
+      </label>
+      <label class="settings-field">
+        <span>Station address</span>
+        <input id="settingsStation" type="text" placeholder="http://station:5000" autocomplete="off">
+      </label>
+      <div class="row">
+        <button id="saveSettings">SAVE SETTINGS</button>
+        <button id="connectSettings">SAVE + CONNECT</button>
+      </div>
+      <button id="testDisplay">TEST DISPLAY STATUS</button>
+      <div class="status" id="settingsStatus"></div>
+      <div class="hint2">The saved Wi-Fi password is never returned. Leave it blank to keep it when the SSID is unchanged.</div>
+    </div>
+
+    <div class="div"></div>
+
     <div class="meta">
       <b>OUT:</b> 128×128 px · RGB565 BE<br>
       <b>SLOTS:</b> 4 · <b>GESTURES:</b> short/long/double<br>
@@ -204,6 +236,7 @@ const vctx = view.getContext('2d');
 const pv   = document.getElementById('preview');
 const pctx = pv.getContext('2d', { willReadFrequently:true });
 const status = document.getElementById('status');
+const settingsStatus = document.getElementById('settingsStatus');
 const scaleOut = document.getElementById('scaleOut');
 const zoomSlider = document.getElementById('zoom');
 
@@ -214,6 +247,11 @@ let dragging = false, lastX = 0, lastY = 0;
 let frameRect = {x:0,y:0,s:0}; // lime box on screen (square, side s, top-left x,y)
 
 function setStatus(msg, cls){ status.textContent = msg; status.className = 'status' + (cls?(' '+cls):''); }
+
+function setSettingsStatus(msg, cls){
+  settingsStatus.textContent = msg;
+  settingsStatus.className = 'status' + (cls?(' '+cls):'');
+}
 
 // ---- canvas sizing ----
 function resizeView(){
@@ -673,12 +711,71 @@ async function loadPeers(){
   }
 }
 
+// ---- settings + tests ----
+let loadedSettingsSsid = '';
+async function loadSettings(){
+  try{
+    const r = await fetch('/settings');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data = await r.json();
+    document.getElementById('settingsSsid').value = data.ssid || '';
+    document.getElementById('settingsPass').value = '';
+    loadedSettingsSsid = data.ssid || '';
+    document.getElementById('settingsStation').value = data.station || '';
+    const address = data.ip ? ' · '+data.ip : '';
+    setSettingsStatus('Mode: '+data.mode+address, 'ok');
+  }catch(e){
+    setSettingsStatus('Could not load settings: '+e.message, 'err');
+  }
+}
+
+async function saveSettings(connect){
+  const ssid = document.getElementById('settingsSsid').value.trim();
+  const pass = document.getElementById('settingsPass').value;
+  const updateWifi = ssid !== loadedSettingsSsid || pass.length > 0;
+  const form = new URLSearchParams();
+  form.set('station', document.getElementById('settingsStation').value.trim());
+  form.set('ssid', updateWifi ? ssid : '');
+  form.set('pass', updateWifi ? pass : '');
+  if(connect) form.set('connect', '1');
+  setSettingsStatus(connect ? 'Saving and connecting…' : 'Saving…');
+  try{
+    const r = await fetch('/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:form.toString()
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status+' · '+await r.text());
+    document.getElementById('settingsPass').value = '';
+    if(updateWifi && ssid) loadedSettingsSsid = ssid;
+    setSettingsStatus(connect ? 'Settings saved. Switching to STA…' : 'Settings saved.', 'ok');
+  }catch(e){
+    setSettingsStatus('Settings failed: '+e.message, 'err');
+  }
+}
+
+async function testDisplayStatus(){
+  setSettingsStatus('Requesting display status…');
+  try{
+    const r = await fetch('/test/display', {method:'POST'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    setSettingsStatus('Display status requested.', 'ok');
+  }catch(e){
+    setSettingsStatus('Display test failed: '+e.message, 'err');
+  }
+}
+
+document.getElementById('saveSettings').onclick = ()=>saveSettings(false);
+document.getElementById('connectSettings').onclick = ()=>saveSettings(true);
+document.getElementById('testDisplay').onclick = testDisplayStatus;
+
 // ---- boot ----
 resizeView();
 buildSlotBar();
 loadState();
 loadGestures();
 loadPeers();
+loadSettings();
 setInterval(loadPeers, 5000);
 setStatus('Load an image to begin.');
 </script>

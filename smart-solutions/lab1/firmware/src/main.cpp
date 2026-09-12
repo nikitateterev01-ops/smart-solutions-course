@@ -19,6 +19,7 @@
 
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
@@ -53,9 +54,12 @@ static const int      BAT_EMPTY_MV = 3300; // treat as 0%
 static const char* AP_SSID = "AtomFramer";
 static const char* AP_PASS = "atomframer";
 
+static const uint16_t DNS_PORT = 53;
 static const uint32_t STA_TIMEOUT_MS = 20000;  // give up on a join after this
+static const uint32_t SETTINGS_CONNECT_DELAY_MS = 250;
 
 WebServer server(80);
+DNSServer dnsServer;
 Preferences prefs;
 
 static uint8_t frameBuf[FRAME_BYTES];
@@ -69,10 +73,41 @@ static String  lineBuf;          // serial line accumulator
 static String  pendingSsid;      // ssid we're currently trying to join
 static bool    staConnecting = false;
 static uint32_t staDeadline = 0;
+static bool    settingsConnectPending = false;
+static uint32_t settingsConnectAt = 0;
+static String  settingsConnectSsid;
+static String  settingsConnectPass;
 
 static bool apActive() {
   auto m = WiFi.getMode();
   return m == WIFI_AP || m == WIFI_AP_STA;
+}
+
+static String jsonString(const String& value) {
+  String escaped = "\"";
+  escaped.reserve(value.length() + 2);
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    switch (c) {
+      case '\"': escaped += "\\\""; break;
+      case '\\': escaped += "\\\\"; break;
+      case '\b': escaped += "\\b"; break;
+      case '\f': escaped += "\\f"; break;
+      case '\n': escaped += "\\n"; break;
+      case '\r': escaped += "\\r"; break;
+      case '\t': escaped += "\\t"; break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char unicodeEscape[7];
+          snprintf(unicodeEscape, sizeof(unicodeEscape), "\\u%04x", (unsigned char)c);
+          escaped += unicodeEscape;
+        } else {
+          escaped += c;
+        }
+    }
+  }
+  escaped += "\"";
+  return escaped;
 }
 
 // ---- frame display + persistence -------------------------------------------
@@ -264,8 +299,10 @@ static void printHelp() {
 // ---- WiFi mode control -----------------------------------------------------
 static void startAP() {
   staConnecting = false;
+  dnsServer.stop();
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
   Serial.printf("SoftAP \"%s\"  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
   if (!frameOk) showStatus();  // keep a restored frame on screen; status is on the button
 }
@@ -275,6 +312,7 @@ static void startSTA(const String& ssid, const String& pass, bool save) {
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
   }
+  dnsServer.stop();
   pendingSsid = ssid;
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);    // rejoin automatically after a WiFi-infra swap
@@ -394,6 +432,70 @@ static void pumpButton() {
 // ---- HTTP handlers ---------------------------------------------------------
 static void handleRoot() {
   server.send_P(200, "text/html", INDEX_HTML);
+}
+
+static void handleSettingsGet() {
+  String mode = "offline";
+  String ip;
+  wifi_mode_t wifiMode = WiFi.getMode();
+  if (wifiMode == WIFI_AP || wifiMode == WIFI_AP_STA) {
+    mode = "ap";
+    ip = WiFi.softAPIP().toString();
+  } else if (wifiMode == WIFI_STA) {
+    mode = "sta";
+    if (WiFi.status() == WL_CONNECTED) ip = WiFi.localIP().toString();
+  }
+
+  String response = "{\"ssid\":" + jsonString(prefs.getString("ssid", ""))
+                  + ",\"station\":" + jsonString(prefs.getString("station", ""))
+                  + ",\"mode\":" + jsonString(mode)
+                  + ",\"ip\":" + jsonString(ip) + "}";
+  server.send(200, "application/json", response);
+}
+
+static void handleSettingsPost() {
+  String station = server.arg("station");
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+  bool connect = server.hasArg("connect") && server.arg("connect") == "1";
+
+  station.trim();
+  ssid.trim();
+  prefs.putString("station", station);
+  if (ssid.length()) {
+    prefs.putString("ssid", ssid);
+    prefs.putString("pass", pass);
+  }
+
+  if (!connect) {
+    server.send(200, "application/json", "{\"saved\":true,\"connecting\":false}");
+    return;
+  }
+
+  String connectSsid = ssid.length() ? ssid : prefs.getString("ssid", "");
+  String connectPass = ssid.length() ? pass : prefs.getString("pass", "");
+  if (!connectSsid.length()) {
+    server.send(400, "application/json", "{\"error\":\"ssid required for connect\"}");
+    return;
+  }
+
+  server.send(200, "application/json", "{\"saved\":true,\"connecting\":true}");
+  settingsConnectSsid = connectSsid;
+  settingsConnectPass = connectPass;
+  settingsConnectPending = true;
+  settingsConnectAt = millis() + SETTINGS_CONNECT_DELAY_MS;
+}
+
+static void handleDisplayTest() {
+  showStatus();
+  server.send(200, "application/json", "{\"displayed\":true}");
+}
+
+static void processSettingsConnect() {
+  if (!settingsConnectPending) return;
+  if ((int32_t)(millis() - settingsConnectAt) < 0) return;
+  settingsConnectPending = false;
+  startSTA(settingsConnectSsid, settingsConnectPass, false);
 }
 
 // Multipart file upload: binary-safe, streamed in chunks by the core WebServer.
@@ -546,6 +648,18 @@ void setup() {
   disco::begin();   // random name (persisted) + UDP discovery, after WiFi is up
 
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/generate_204", HTTP_GET, handleRoot);
+  server.on("/gen_204", HTTP_GET, handleRoot);
+  server.on("/hotspot-detect.html", HTTP_GET, handleRoot);
+  server.on("/library/test/success.html", HTTP_GET, handleRoot);
+  server.on("/connecttest.txt", HTTP_GET, handleRoot);
+  server.on("/ncsi.txt", HTTP_GET, handleRoot);
+  server.on("/redirect", HTTP_GET, handleRoot);
+  server.on("/canonical.html", HTTP_GET, handleRoot);
+  server.on("/success.txt", HTTP_GET, handleRoot);
+  server.on("/settings", HTTP_GET, handleSettingsGet);
+  server.on("/settings", HTTP_POST, handleSettingsPost);
+  server.on("/test/display", HTTP_POST, handleDisplayTest);
   server.on("/state", HTTP_GET, handleState);
   server.on("/set", HTTP_GET, handleSet);
   server.on("/overlay", HTTP_GET, handleOverlay);
@@ -558,6 +672,10 @@ void setup() {
   server.on("/frame", HTTP_GET, handleFrameGet);
   // POST /frame: (responder, upload-handler) — the upload handler fires first.
   server.on("/frame", HTTP_POST, handleFrameDone, handleFrameUpload);
+  server.onNotFound([]() {
+    if (apActive()) handleRoot();
+    else server.send(404, "text/plain", "Not found");
+  });
   server.begin();
 
   Serial.println();
@@ -568,8 +686,10 @@ void setup() {
 void loop() {
   M5.update();
   server.handleClient();
+  processSettingsConnect();
   pumpSerial();
   pollSTA();
+  if (apActive()) dnsServer.processNextRequest();
   disco::loop();   // UDP announce + peer table upkeep
   pumpButton();    // short / long / double click -> the current slot's actions
 }
