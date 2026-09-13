@@ -24,6 +24,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <LittleFS.h>
+#include <esp_system.h>
 
 #include "names_discovery.h"
 #include "overlay.h"
@@ -57,6 +58,9 @@ static const char* AP_PASS = "atomframer";
 static const uint16_t DNS_PORT = 53;
 static const uint32_t STA_TIMEOUT_MS = 20000;  // give up on a join after this
 static const uint32_t SETTINGS_CONNECT_DELAY_MS = 250;
+static const uint32_t LETTER_RETRY_DELAY_MS = 250;
+static const uint32_t LETTER_FEEDBACK_MS = 1500;
+static const uint8_t  LETTER_MAX_ATTEMPTS = 3;
 
 WebServer server(80);
 DNSServer dnsServer;
@@ -77,6 +81,27 @@ static bool    settingsConnectPending = false;
 static uint32_t settingsConnectAt = 0;
 static String  settingsConnectSsid;
 static String  settingsConnectPass;
+
+enum class LetterSendState { Idle, Pending, WaitingRetry, Success, Failed };
+enum class LetterAttemptResult { Ack, RetryableError, StationMissing };
+
+struct LetterEvent {
+  char letter = 'A';
+  String session;
+  uint32_t seq = 0;
+  uint32_t atomSentMs = 0;
+};
+
+static char selectedLetter = 'A';
+static uint32_t letterSequence = 0;
+static String letterSession;
+static bool letterButtonMode = false;
+static LetterEvent pendingLetter;
+static LetterSendState letterSendState = LetterSendState::Idle;
+static uint8_t letterAttempt = 0;
+static uint32_t letterNextAttemptAt = 0;
+static bool letterDisplayRestorePending = false;
+static uint32_t letterDisplayRestoreAt = 0;
 
 static bool apActive() {
   auto m = WiFi.getMode();
@@ -108,6 +133,33 @@ static String jsonString(const String& value) {
   }
   escaped += "\"";
   return escaped;
+}
+
+// Koostab igal käivitusel uue session'i tunnuse, mis püsib sama kuni restartini.
+static String makeBootSession() {
+  char value[17];
+  snprintf(value, sizeof(value), "%08lx%08lx",
+           (unsigned long)esp_random(), (unsigned long)esp_random());
+  return String(value);
+}
+
+// Normaliseerib seadetes oleva jaama aadressi üheks API endpoint'iks.
+static String normalizeStationUrl(String station) {
+  station.trim();
+  if (!station.length()) return "";
+  if (!station.startsWith("http://") && !station.startsWith("https://")) {
+    station = "http://" + station;
+  }
+
+  int authorityStart = station.indexOf("://") + 3;
+  int pathStart = station.indexOf('/', authorityStart);
+  if (pathStart < 0) pathStart = station.length();
+  String authority = station.substring(authorityStart, pathStart);
+  if (authority.indexOf(':') < 0) station = station.substring(0, pathStart) + ":5000" + station.substring(pathStart);
+
+  while (station.endsWith("/")) station.remove(station.length() - 1);
+  if (!station.endsWith("/api/letter")) station += "/api/letter";
+  return station;
 }
 
 // ---- frame display + persistence -------------------------------------------
@@ -271,6 +323,137 @@ static void redraw() {
   else showStatus();
 }
 
+// Tähevaade kasutab ekraani ajutiselt, kuid ei muuda frameBuf'i ega salvestatud slotte.
+static void showLetterPanel(const char* heading, char letter) {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(6, 8);
+  M5.Display.println(heading);
+  M5.Display.setTextSize(7);
+  M5.Display.setCursor(43, 43);
+  M5.Display.print(letter);
+  M5.Display.setTextSize(1);
+}
+
+static void showSelectedLetter() {
+  showLetterPanel("SELECTED", selectedLetter);
+}
+
+static void scheduleLetterDisplayRestore() {
+  letterDisplayRestorePending = true;
+  letterDisplayRestoreAt = millis() + LETTER_FEEDBACK_MS;
+}
+
+static bool letterSendBusy() {
+  return letterSendState == LetterSendState::Pending
+      || letterSendState == LetterSendState::WaitingRetry;
+}
+
+// Uus kasutaja sündmus saab seq väärtuse ainult siin; korduskatsed seda ei muuda.
+static bool queueLetterEvent(char letter) {
+  if (letterSendBusy()) return false;
+  pendingLetter.letter = letter;
+  pendingLetter.session = letterSession;
+  pendingLetter.seq = ++letterSequence;
+  pendingLetter.atomSentMs = millis();
+  letterAttempt = 0;
+  letterNextAttemptAt = millis();
+  letterSendState = LetterSendState::Pending;
+  letterDisplayRestorePending = false;
+  Serial.printf("LETTER queue %c session=%s seq=%lu\n", letter,
+                pendingLetter.session.c_str(), (unsigned long)pendingLetter.seq);
+  showLetterPanel("SENDING", letter);
+  return true;
+}
+
+// Teeb ühe piiratud HTTP katse. Korduskatsete ajastamine toimub loop()-is.
+static LetterAttemptResult sendLetterToStation(const LetterEvent& event, String& detail) {
+  String station = prefs.getString("station", "");
+  String url = normalizeStationUrl(station);
+  if (!url.length()) {
+    detail = "station not configured";
+    Serial.println("LETTER failed: station not configured");
+    return LetterAttemptResult::StationMissing;
+  }
+
+  String letterValue(event.letter);
+  String payload = "{\"letter\":" + jsonString(letterValue)
+                 + ",\"session\":" + jsonString(event.session)
+                 + ",\"seq\":" + String(event.seq)
+                 + ",\"atom_sent_ms\":" + String(event.atomSentMs) + "}";
+
+  Serial.printf("LETTER attempt %u %s\n", letterAttempt, url.c_str());
+  HTTPClient http;
+  http.setConnectTimeout(1000);
+  http.setTimeout(2000);
+  if (!http.begin(url)) {
+    detail = "HTTP begin failed";
+    Serial.println("LETTER HTTP begin failed");
+    return LetterAttemptResult::RetryableError;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(payload);
+  String responseBody;
+  if (code > 0) responseBody = http.getString();
+  http.end();
+
+  if (code == 200 || code == 202) {
+    detail = responseBody;
+    Serial.printf("LETTER ACK %d session=%s seq=%lu\n", code,
+                  event.session.c_str(), (unsigned long)event.seq);
+    return LetterAttemptResult::Ack;
+  }
+
+  if (code <= 0) detail = HTTPClient::errorToString(code);
+  else detail = "HTTP " + String(code) + " " + responseBody;
+  Serial.printf("LETTER error %s\n", detail.c_str());
+  return LetterAttemptResult::RetryableError;
+}
+
+static void processLetterSender() {
+  if (letterDisplayRestorePending
+      && (int32_t)(millis() - letterDisplayRestoreAt) >= 0) {
+    letterDisplayRestorePending = false;
+    if (letterButtonMode) showSelectedLetter();
+    else redraw();
+  }
+
+  if (!letterSendBusy()) return;
+  if ((int32_t)(millis() - letterNextAttemptAt) < 0) return;
+
+  letterAttempt++;
+  String detail;
+  LetterAttemptResult result = sendLetterToStation(pendingLetter, detail);
+  if (result == LetterAttemptResult::Ack) {
+    letterSendState = LetterSendState::Success;
+    showLetterPanel("SENT", pendingLetter.letter);
+    scheduleLetterDisplayRestore();
+    return;
+  }
+  if (result == LetterAttemptResult::StationMissing) {
+    letterSendState = LetterSendState::Failed;
+    showLetterPanel("NO STATION", pendingLetter.letter);
+    scheduleLetterDisplayRestore();
+    return;
+  }
+  if (letterAttempt >= LETTER_MAX_ATTEMPTS) {
+    letterSendState = LetterSendState::Failed;
+    Serial.printf("LETTER failed session=%s seq=%lu after %u attempts\n",
+                  pendingLetter.session.c_str(), (unsigned long)pendingLetter.seq,
+                  letterAttempt);
+    showLetterPanel("FAILED", pendingLetter.letter);
+    scheduleLetterDisplayRestore();
+    return;
+  }
+
+  letterSendState = LetterSendState::WaitingRetry;
+  letterNextAttemptAt = millis() + LETTER_RETRY_DELAY_MS;
+  Serial.printf("LETTER retry scheduled %u/%u\n", letterAttempt + 1,
+                LETTER_MAX_ATTEMPTS);
+}
+
 // ---- serial reporting ------------------------------------------------------
 static void reportIP() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -403,29 +586,57 @@ static void runGesture(int g) {
   else if (g == 1) showStatus();
 }
 
-// Classify BtnA press/release timing into short / long / double and fire it. A
-// short release is held back until the double-click window passes (so it can
-// become a double instead); a 500–1500 ms release is in neither band, ignored.
+// Tähe nupurežiim on eraldi valik, et olemasolevad sloti žestid säiliksid.
+static void runButtonAction(int g) {
+  if (!letterButtonMode) {
+    runGesture(g);
+    return;
+  }
+  if (g == 0) {
+    selectedLetter = selectedLetter == 'Z' ? 'A' : selectedLetter + 1;
+    Serial.printf("LETTER selected %c\n", selectedLetter);
+    showSelectedLetter();
+  } else if (g == 1) {
+    if (!queueLetterEvent(selectedLetter)) {
+      Serial.println("LETTER queue rejected: sender busy");
+    }
+  } else {
+    Serial.println("LETTER double click ignored in letter button mode");
+  }
+}
+
+// Tähe nupurežiimis töödeldakse lühike vajutus kohe vabastamisel. Tavarežiimi
+// short/long/double loogika ja double-click'i ooteaken jäävad muutmata.
 static void pumpButton() {
   if (M5.BtnA.wasPressed())  pressStart = millis();
   if (M5.BtnA.wasReleased()) {
     uint32_t dur = millis() - pressStart;
+    if (letterButtonMode) {
+      shortPending = false;
+      if (dur >= LONG_MIN_MS) {
+        runButtonAction(1);                            // long
+      } else if (dur < SHORT_MAX_MS) {
+        runButtonAction(0);                            // short kohe pärast release'i
+      }
+      return;
+    }
+
     if (dur >= LONG_MIN_MS) {
       shortPending = false;
-      runGesture(1);                                   // long
+      runButtonAction(1);                              // long
     } else if (dur < SHORT_MAX_MS) {
       if (shortPending && (millis() - firstShortAt) <= DOUBLE_MS) {
         shortPending = false;
-        runGesture(2);                                 // double
+        runButtonAction(2);                            // double
       } else {
         shortPending = true;
         firstShortAt = millis();
       }
     }
   }
-  if (shortPending && (millis() - firstShortAt) > DOUBLE_MS) {
+  if (!letterButtonMode && shortPending && (millis() - firstShortAt) > DOUBLE_MS) {
     shortPending = false;
-    runGesture(0);                                     // single short
+    runButtonAction(0);                                // single short
   }
 }
 
@@ -449,7 +660,8 @@ static void handleSettingsGet() {
   String response = "{\"ssid\":" + jsonString(prefs.getString("ssid", ""))
                   + ",\"station\":" + jsonString(prefs.getString("station", ""))
                   + ",\"mode\":" + jsonString(mode)
-                  + ",\"ip\":" + jsonString(ip) + "}";
+                  + ",\"ip\":" + jsonString(ip)
+                  + ",\"letter_mode\":" + (letterButtonMode ? "true" : "false") + "}";
   server.send(200, "application/json", response);
 }
 
@@ -458,13 +670,23 @@ static void handleSettingsPost() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
   bool connect = server.hasArg("connect") && server.arg("connect") == "1";
+  bool previousLetterButtonMode = letterButtonMode;
 
   station.trim();
   ssid.trim();
   prefs.putString("station", station);
+  if (server.hasArg("letter_mode")) {
+    letterButtonMode = server.arg("letter_mode") == "1";
+    prefs.putBool("letterMode", letterButtonMode);
+  }
   if (ssid.length()) {
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
+  }
+  if (letterButtonMode != previousLetterButtonMode) {
+    shortPending = false;
+    if (letterButtonMode) showSelectedLetter();
+    else redraw();
   }
 
   if (!connect) {
@@ -489,6 +711,28 @@ static void handleSettingsPost() {
 static void handleDisplayTest() {
   showStatus();
   server.send(200, "application/json", "{\"displayed\":true}");
+}
+
+static void handleLetterTest() {
+  String value = server.arg("letter");
+  value.trim();
+  value.toUpperCase();
+  if (value.length() != 1 || value[0] < 'A' || value[0] > 'Z') {
+    server.send(400, "application/json", "{\"error\":\"letter must be A-Z\"}");
+    return;
+  }
+  if (letterSendBusy()) {
+    server.send(409, "application/json", "{\"error\":\"letter sender busy\"}");
+    return;
+  }
+
+  selectedLetter = value[0];
+  queueLetterEvent(selectedLetter);
+  String response = "{\"queued\":true,\"state\":\"pending\",\"letter\":"
+                  + jsonString(value) + ",\"session\":"
+                  + jsonString(pendingLetter.session) + ",\"seq\":"
+                  + String(pendingLetter.seq) + "}";
+  server.send(202, "application/json", response);
 }
 
 static void processSettingsConnect() {
@@ -630,6 +874,8 @@ void setup() {
 
   Serial.begin(115200);
   prefs.begin("wifi", false);
+  letterSession = makeBootSession();
+  letterButtonMode = prefs.getBool("letterMode", false);
 
   // Mount flash and restore the last-shown slot immediately, so the panel comes
   // straight up on its page — no boot animation, no status screen, no WiFi wait.
@@ -660,6 +906,7 @@ void setup() {
   server.on("/settings", HTTP_GET, handleSettingsGet);
   server.on("/settings", HTTP_POST, handleSettingsPost);
   server.on("/test/display", HTTP_POST, handleDisplayTest);
+  server.on("/test/letter", HTTP_POST, handleLetterTest);
   server.on("/state", HTTP_GET, handleState);
   server.on("/set", HTTP_GET, handleSet);
   server.on("/overlay", HTTP_GET, handleOverlay);
@@ -677,9 +924,11 @@ void setup() {
     else server.send(404, "text/plain", "Not found");
   });
   server.begin();
+  if (letterButtonMode) showSelectedLetter();
 
   Serial.println();
   Serial.printf("ATOM FRAMER ready — name \"%s\".\n", disco::name().c_str());
+  Serial.printf("LETTER session=%s\n", letterSession.c_str());
   printHelp();
 }
 
@@ -687,6 +936,7 @@ void loop() {
   M5.update();
   server.handleClient();
   processSettingsConnect();
+  processLetterSender();
   pumpSerial();
   pollSTA();
   if (apActive()) dnsServer.processNextRequest();

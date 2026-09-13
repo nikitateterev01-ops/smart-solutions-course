@@ -102,11 +102,13 @@ static const char INDEX_HTML[] PROGMEM = R"=====(<!DOCTYPE html>
   .peerrow .pip{color:var(--dim);font-size:10px}
   .settings-field{display:flex;flex-direction:column;gap:4px}
   .settings-field span{font-size:10px;color:var(--dim);letter-spacing:.08em}
-  .settings-field input{
+  .settings-field input,.settings-field select{
     width:100%;font:inherit;font-size:11px;background:var(--pad);color:var(--ink);
     border:1px solid var(--line);padding:7px 8px
   }
-  .settings-field input:focus{outline:none;border-color:var(--hot)}
+  .settings-field input:focus,.settings-field select:focus{outline:none;border-color:var(--hot)}
+  .settings-check{display:flex;align-items:flex-start;gap:8px;font-size:10px;color:var(--dim);line-height:1.4}
+  .settings-check input{margin-top:2px;accent-color:var(--hot)}
 </style>
 </head>
 <body>
@@ -206,11 +208,20 @@ static const char INDEX_HTML[] PROGMEM = R"=====(<!DOCTYPE html>
         <span>Station address</span>
         <input id="settingsStation" type="text" placeholder="http://station:5000" autocomplete="off">
       </label>
+      <label class="settings-check">
+        <input id="letterButtonMode" type="checkbox">
+        <span>Letter button mode: short selects A–Z, long sends. Off keeps slot gestures.</span>
+      </label>
       <div class="row">
         <button id="saveSettings">SAVE SETTINGS</button>
         <button id="connectSettings">SAVE + CONNECT</button>
       </div>
       <button id="testDisplay">TEST DISPLAY STATUS</button>
+      <label class="settings-field">
+        <span>Test letter (A–Z)</span>
+        <input id="testLetter" type="text" maxlength="1" value="A" autocomplete="off">
+      </label>
+      <button id="testLetterSend">TEST LETTER SEND</button>
       <div class="status" id="settingsStatus"></div>
       <div class="hint2">The saved Wi-Fi password is never returned. Leave it blank to keep it when the SSID is unchanged.</div>
     </div>
@@ -722,6 +733,7 @@ async function loadSettings(){
     document.getElementById('settingsPass').value = '';
     loadedSettingsSsid = data.ssid || '';
     document.getElementById('settingsStation').value = data.station || '';
+    document.getElementById('letterButtonMode').checked = !!data.letter_mode;
     const address = data.ip ? ' · '+data.ip : '';
     setSettingsStatus('Mode: '+data.mode+address, 'ok');
   }catch(e){
@@ -737,6 +749,7 @@ async function saveSettings(connect){
   form.set('station', document.getElementById('settingsStation').value.trim());
   form.set('ssid', updateWifi ? ssid : '');
   form.set('pass', updateWifi ? pass : '');
+  form.set('letter_mode', document.getElementById('letterButtonMode').checked ? '1' : '0');
   if(connect) form.set('connect', '1');
   setSettingsStatus(connect ? 'Saving and connecting…' : 'Saving…');
   try{
@@ -765,9 +778,35 @@ async function testDisplayStatus(){
   }
 }
 
+async function testLetterSend(){
+  const input = document.getElementById('testLetter');
+  const letter = input.value.trim().toUpperCase();
+  input.value = letter;
+  if(!/^[A-Z]$/.test(letter)){
+    setSettingsStatus('Test letter must be A–Z.', 'err');
+    return;
+  }
+  const form = new URLSearchParams();
+  form.set('letter', letter);
+  setSettingsStatus('Queueing letter '+letter+'…');
+  try{
+    const r = await fetch('/test/letter', {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:form.toString()
+    });
+    const body = await r.text();
+    if(!r.ok) throw new Error('HTTP '+r.status+' · '+body);
+    setSettingsStatus('Letter '+letter+' queued: '+body, 'ok');
+  }catch(e){
+    setSettingsStatus('Letter test failed: '+e.message, 'err');
+  }
+}
+
 document.getElementById('saveSettings').onclick = ()=>saveSettings(false);
 document.getElementById('connectSettings').onclick = ()=>saveSettings(true);
 document.getElementById('testDisplay').onclick = testDisplayStatus;
+document.getElementById('testLetterSend').onclick = testLetterSend;
 
 // ---- boot ----
 resizeView();

@@ -51,13 +51,26 @@ Nupud:
 - `SAVE SETTINGS`
 - `SAVE + CONNECT`
 - `TEST DISPLAY STATUS`
+- `TEST LETTER SEND`
+
+Seadetes on eraldi `Letter button mode` valik. Kui see on välja lülitatud,
+säilivad olemasolevad sloti short/long/double žestid. Kui valik on sisse
+lülitatud, valib lühike vajutus järgmise tähe `A`–`Z` ja pikk vajutus saadab
+valitud tähe jaamale. Reaalne nupukäitumine kontrollitakse AtomS3-l.
 
 ## Testinupud
 
 `POST /test/display` kutsub välja olemasoleva võrgu ja seadme olekuekraani. Endpoint ei lisa näidisandmeid ega kinnita ekraani füüsilist toimimist.
 
+`POST /test/letter` võtab vastu vormivälja `letter=A`, valideerib vahemiku
+`A`–`Z` ning käivitab sama letter sender pipeline'i nagu füüsilise nupu pikk
+vajutus. HTTP handler tagastab kohe järjekorda lisamise oleku ega oota
+korduskatsete lõppu.
+
 - Ekraani oleku testi tarkvaraline teostus: lisatud
 - Ekraani oleku test reaalsel AtomS3-l: TODO
+- Tähe saatmise tarkvaraline testitee: lisatud
+- Atom ↔ jaam end-to-end test: TODO
 
 ## Riistvaratesti kontrollnimekiri
 
@@ -71,3 +84,6 @@ Nupud:
 - [ ] Kontrolli STA-ühendust labori võrgus.
 - [ ] Kontrolli, et `GET /settings` ei tagastaks Wi-Fi parooli.
 - [ ] Kontrolli `TEST DISPLAY STATUS` nuppu reaalsel ekraanil.
+- [ ] Kontrolli `TEST LETTER SEND` nuppu päris Atomi ja jaamaga.
+- [ ] Kontrolli lühikese ja pika vajutuse tähe nupurežiimi.
+- [ ] Kontrolli, et tähe nupurežiimi väljalülitamisel töötavad sloti žestid endiselt.

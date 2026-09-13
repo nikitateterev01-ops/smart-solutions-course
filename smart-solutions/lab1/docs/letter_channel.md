@@ -17,11 +17,15 @@ Põhjus:
 
 ### AtomS3
 
-Atom valib nupuga tähe. Kui kasutaja kinnitab saatmise, saadab Atom ühe
-HTTP POST päringu jaamale.
+Atomil on eraldi seadistatav tähe nupurežiim. Selles režiimis valib lühike
+vajutus järgmise tähe `A`–`Z` ja pikk vajutus kinnitab saatmise. Kui tähe
+nupurežiim on välja lülitatud, töötavad varasemad sloti short/long/double
+žestid muutmata kujul.
 
 Jaama aadress ei ole lähtekoodis fikseeritud. See salvestatakse Atomi
-veebilehe seadetes väljale `station address`.
+veebilehe seadetes väljale `station address`. Saatja normaliseerib palja
+hosti või IP-aadressi kujule `http://<host>:5000/api/letter` ning lisab
+juba skeemi ja pordiga baasaadressile ainult `/api/letter` tee.
 
 ### Jaam
 
@@ -99,20 +103,60 @@ HTTP:
 - `202` — uus täht võeti vastu;
 - `200` — sama `session + seq` oli juba vastu võetud ja ainult kinnitatakse;
 - `400` — vigane JSON või vigane täht.
+- `422` — tähe trajektoor ei ole jaamas seadistatud.
 
-## Korduskatse
+## Atomi saatja teostus
 
-Atom peab hoidma sündmust alles kuni HTTP `200` või `202` vastuseni.
+Püsivaras luuakse igal käivitusel `esp_random()` põhine session'i tunnus.
+See tunnus püsib ühe boot'i jooksul sama ja uue käivituse järel luuakse uus.
+Järjekorranumber `seq` algab väärtusest `1` ning suureneb täpselt ühe korra
+iga järjekorda vastu võetud kasutaja saatmissündmuse kohta. Sama sündmuse
+korduskatsed kasutavad muutmata tähte, session'it, `seq` väärtust ja
+`atom_sent_ms` väärtust.
 
-Soovituslik loogika:
+Saatmine toimub `loop()`-is väikese olekumasinaga:
 
-1. saada kohe;
-2. kui ühendus või HTTP päring ebaõnnestub, oota 250 ms;
-3. saada **sama `session` ja `seq`** uuesti;
-4. proovi kuni 3 korda;
-5. pärast kolmandat viga näita kasutajale saatmisviga, ära loo uut `seq` väärtust automaatselt.
+- `idle` — saatmist ei ole;
+- `pending` — uus sündmus ootab esimest katset;
+- `waiting_retry` — sama sündmus ootab järgmist katset;
+- `success` — jaam vastas HTTP `200` või `202`;
+- `failed` — aadress puudub või kõik katsed ebaõnnestusid.
 
-Reaalne retry käitumine kontrollitakse AtomS3-l.
+Ühe sündmuse jaoks tehakse kuni kolm HTTP POST katset. Võrguvea, timeout'i
+või muu kui `200`/`202` HTTP vastuse järel oodatakse ligikaudu 250 ms ja
+proovitakse sama sündmust uuesti. HTTP ühenduse ja vastuse timeout on
+piiratud. Kogu retry-tsüklit ei käivitata veebipäringu handler'is.
+
+Kui `station address` on tühi, lõpetab saatja sündmuse arusaadava veaga ega
+tee võrgupäringut. Serial logi sisaldab sündmuse tähte, session'it, `seq`
+väärtust, katse numbrit ja ACK või vea olekut, kuid mitte Wi-Fi parooli.
+
+## Tarkvaraline test
+
+Endpoint:
+
+```text
+POST /test/letter
+Content-Type: application/x-www-form-urlencoded
+letter=A
+```
+
+Endpoint valideerib ühe tähe vahemikus `A`–`Z`, lisab uue sündmuse samasse
+saatja järjekorda ja tagastab kohe JSON vastuse olekuga `pending`. See ei oota
+HTTP handler'is retry-tsükli lõppu. Settings & tests lehe nupp
+`TEST LETTER SEND` kasutab seda endpoint'i ja sama saatmisteed nagu füüsilise
+nupu pikk vajutus.
+
+## Ekraani tagasiside
+
+Tähe nupurežiimis näitab ekraan valitud tähte. Saatmise ajal kuvatakse
+`SENDING`, ACK järel `SENT`, vea korral `FAILED` ning seadistamata jaama puhul
+`NO STATION`. Tagasiside ei kirjuta üle `frameBuf` sisu ega salvesta slotte.
+Pärast lühikest tagasisidet taastatakse valitud tähe vaade või varasem
+pildi-/olekuvaade vastavalt aktiivsele režiimile.
+
+Reaalne ekraanikuva, nupud, retry ja Atom ↔ jaam ühendus kontrollitakse
+AtomS3-l laboris.
 
 ## Ohutus
 
@@ -176,8 +220,10 @@ laborisse minekut läbi proovida.
 - [x] ACK ja duplicate käitumine on kirjeldatud.
 - [x] Station receiver on kirjutatud.
 - [x] Mock Atom sender on kirjutatud.
+- [x] Atomi püsivara saatmisfunktsioon ja retry-olekumasin on kirjutatud.
+- [x] `/test/letter` tarkvaraline testitee on kirjutatud.
 - [ ] Käivitada station lokaalselt ja teha mock test.
-- [ ] Ühendada sama protokoll päris Atomi saatmisfunktsiooniga.
+- [x] Ehitada ja kontrollida saatmisfunktsioon PlatformIO-ga.
 
 ## Laboris kontrollitav
 
@@ -185,6 +231,8 @@ laborisse minekut läbi proovida.
 - [ ] Atom ja jaam näevad teineteist võrgus.
 - [ ] Päris nupuvajutus saadab tähe.
 - [ ] Katkestatud ühenduse retry töötab.
+- [ ] `/test/letter` saadab sündmuse päris Atomilt jaamale.
+- [ ] Tähe nupurežiim ei riku tavalisi sloti žeste.
 - [ ] Sama `session + seq` ei käivita robotit kaks korda.
 - [ ] MG400 safety gate.
 - [ ] Esimese robotikäsu ajatempel.
