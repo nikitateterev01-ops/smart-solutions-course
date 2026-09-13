@@ -5,7 +5,7 @@ Real robot coordinates, pen Z and motion verification belong to the lab session.
 
 Run:
     python -m pip install -r requirements.txt
-    python station.py --host 0.0.0.0 --port 5000
+    python station.py --host 0.0.0.0 --port 5000 --dry-run
 
 Test without Atom:
     python mock_atom.py --url http://127.0.0.1:5000 --letter A
@@ -23,6 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from letter_paths import DEFAULT_LETTERS_PATH, LetterPaths, get_letter_path, load_letter_paths
+from motion_plan import build_motion_plan, format_motion_plan
+
 
 app = Flask(__name__)
 
@@ -30,14 +33,17 @@ app = Flask(__name__)
 @dataclass(frozen=True)
 class Config:
     log_path: Path
+    letters_path: Path
+    dry_run: bool
 
 
-CONFIG = Config(log_path=Path("data/letter_events.csv"))
+CONFIG = Config(log_path=Path("data/letter_events.csv"), letters_path=DEFAULT_LETTERS_PATH, dry_run=True)
 LOG_LOCK = threading.Lock()
 
 # The latest accepted sequence number per Atom boot/session id.
 # It prevents a retry from accidentally starting the same robot drawing twice.
 LAST_SEQ: dict[str, int] = {}
+LETTER_PATHS: LetterPaths = load_letter_paths(CONFIG.letters_path)
 
 
 def utc_iso() -> str:
@@ -144,6 +150,30 @@ def receive_letter():
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 400
 
+    try:
+        strokes = get_letter_path(letter, LETTER_PATHS)
+    except ValueError as exc:
+        append_log(
+            letter=letter,
+            session=session,
+            seq=seq,
+            atom_sent_ms=atom_sent_ms,
+            station_received_iso=received_iso,
+            station_received_monotonic_ns=received_mono,
+            robot_command_monotonic_ns=None,
+            status="path_not_configured",
+            note=str(exc),
+        )
+        return (
+            jsonify(
+                ok=False,
+                error="letter path not configured",
+                letter=letter,
+                robot_started=False,
+            ),
+            422,
+        )
+
     previous = LAST_SEQ.get(session)
     if previous is not None and seq <= previous:
         # Retry / duplicate: acknowledge it, but never move the robot twice.
@@ -171,12 +201,8 @@ def receive_letter():
 
     LAST_SEQ[session] = seq
 
-    # IMPORTANT: no robot movement here yet.
-    # In the lab this is where a safety-checked queue/worker will:
-    #  1. confirm robot is enabled and idle;
-    #  2. load a measured letter path;
-    #  3. send the first MG400 command;
-    #  4. record robot_command_monotonic_ns immediately before that command.
+    # This plan contains normalized geometry only. It cannot command an MG400.
+    plan = build_motion_plan(strokes)
     append_log(
         letter=letter,
         session=session,
@@ -185,8 +211,8 @@ def receive_letter():
         station_received_iso=received_iso,
         station_received_monotonic_ns=received_mono,
         robot_command_monotonic_ns=None,
-        status="accepted_no_robot",
-        note="robot integration intentionally pending real MG400 coordinates/test",
+        status="accepted_dry_run",
+        note="normalized motion plan only; no robot command sent",
     )
 
     print(
@@ -197,11 +223,13 @@ def receive_letter():
                 "session": session,
                 "seq": seq,
                 "station_received_iso": received_iso,
+                "status": "accepted_dry_run",
             },
             ensure_ascii=False,
         ),
         flush=True,
     )
+    print(format_motion_plan(plan), flush=True)
 
     return (
         jsonify(
@@ -211,6 +239,8 @@ def receive_letter():
             seq=seq,
             station_received_iso=received_iso,
             robot_started=False,
+            dry_run=True,
+            action_count=len(plan),
         ),
         202,
     )
@@ -221,12 +251,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=5000)
     p.add_argument("--log", type=Path, default=Path("data/letter_events.csv"))
+    p.add_argument("--letters", type=Path, default=DEFAULT_LETTERS_PATH)
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="build and print normalized plans without sending robot commands (default)",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    CONFIG = Config(log_path=args.log)
+    CONFIG = Config(log_path=args.log, letters_path=args.letters, dry_run=args.dry_run)
+    LETTER_PATHS = load_letter_paths(CONFIG.letters_path)
     ensure_log()
     # Debug/reloader off: the station must have one process and one event queue.
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
