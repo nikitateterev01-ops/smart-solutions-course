@@ -55,6 +55,11 @@ Joon 1:
 
 ## Tarkvara ja roboti ühendamine
 
-- Normaliseeritud plaani teisendamine MG400 koordinaatideks: TODO
+- Normaliseeritud punkti teisendamine kalibreeritud abstraktseks XY-punktiks: tarkvaraliselt valmis.
+- Reaalsed MG400 koordinaadid ja joonistusala mõõdetakse laboris: TODO
 - Ohutu pliiatsi tõstmise ja langetamise järjekord: TODO
 - Esimene füüsiline joonistus 20% kiirusel: TODO
+
+Kalibratsioon on praegu tahtlikult puudulik ja reaalsed väärtused on failis `config/robot_calibration.json` märgitud `null`. Täielik kalibratsioon lubab ainult koordinaatide tarkvaralist teisendamist; see ei tähenda MG400 käskude automaatset saatmist.
+
+Kalibratsiooni struktuur ja ohutuspiirangud on kirjeldatud failis `docs/robot_calibration.md`.

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "workspace": {
+    "origin_x": null,
+    "origin_y": null,
+    "width": null,
+    "height": null
+  },
+  "pose": {
+    "r": null,
+    "pen_up_z": null,
+    "pen_down_z": null
+  },
+  "motion": {
+    "speed_percent": null
+  }
+}
